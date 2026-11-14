@@ -1,0 +1,2119 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SLAM Live Map</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"
+  />
+
+  <link rel="stylesheet" href="/frontend/styles.css">
+
+<style>
+  html, body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+  }
+
+  #map {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: #eaeaea;
+  }
+
+  #geoMap {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: #eaeaea;
+    display: none;
+  }
+
+  /* SLAM minimap (game-like overview). */
+  #slamMiniMap {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    width: 260px;
+    height: 180px;
+    z-index: 1100;
+    border: 2px solid rgba(0,0,0,0.35);
+    background: rgba(255,255,255,0.8);
+    display: none; /* only visible on SLAM map */
+  }
+
+  .control-panel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 1000;
+    background: rgba(255,255,255,0.88);
+    padding: 8px;
+    border-radius: 6px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    max-height: 92vh;
+    overflow: auto;
+    backdrop-filter: blur(4px);
+  }
+
+  /* The app currently uses an inline-styled panel; keep it consistent with .control-panel. */
+  #controlPanel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: auto;
+    bottom: auto;
+    z-index: 1000;
+    background: rgba(255,255,255,0.88);
+    padding: 10px;
+    border-radius: 6px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    max-height: 92vh;
+    overflow: auto;
+    backdrop-filter: blur(4px);
+  }
+</style>
+
+</head>
+
+<body>
+<div id="controlPanel" class="flight-console">
+  <div class="console-header">
+    <div class="console-title">DRONE CONSOLE</div>
+    <div class="console-actions">
+      <button id="darkModeBtn" class="icon-btn" title="Toggle dark mode">🌙</button>
+      <button id="consoleToggleBtn" class="icon-btn" title="Expand / collapse">☰</button>
+    </div>
+  </div>
+
+  <div class="console-section primary">
+    <div class="section-title">SLAM</div>
+    <div class="btn-row">
+      <button id="startBtn" class="btn-primary">🚀 Start</button>
+      <button id="finalizeMapBtn" class="btn-primary">✅ Finish</button>
+    </div>
+    <div id="slamStateBadge" class="slam-badge mapping"></div>
+    <div id="navModeBadge" class="nav-badge"></div>
+  </div>
+
+  <div class="section-divider"></div>
+
+  <div class="console-section">
+    <div class="section-title">FLIGHT</div>
+    <div class="btn-row">
+      <button id="stopBtn" class="btn-danger">🛑 Stop</button>
+      <button id="restartBtn" class="btn">🔄 Restart</button>
+    </div>
+  </div>
+
+  <div class="section-divider"></div>
+
+  <details class="console-section" open>
+    <summary class="section-title">CALIBRATION</summary>
+    <div class="btn-row">
+      <button id="toggleGeoBtn" class="btn">🗺️ Geo Mission</button>
+      <button id="calibrateBtn" class="btn">🧭 Calibrate SLAM</button>
+      <button id="calibStatusBtn" class="btn">🟥 Status</button>
+    </div>
+
+    <div class="btn-row">
+      <button id="calibrateRunBtn" class="btn">🧭 Calibrate Run</button>
+      <button id="calibWizardBtn" class="btn">🧪 Stop+Snap Wizard</button>
+      <button id="autoAlignBtn" class="btn">Auto Align: Start</button>
+    </div>
+
+    <div class="btn-row">
+      <label class="inline-label">Axes:</label>
+      <select id="axisMode" class="select">
+        <option value="en_up">east→right, north→up</option>
+        <option value="en_down">east→right, north→down</option>
+        <option value="ne_up">north→right, east→up</option>
+        <option value="ne_down">north→right, east→down</option>
+      </select>
+    </div>
+
+    <div id="calibStatus" class="status-block"></div>
+    <div id="autoAlignStatus" class="status-block"></div>
+    <div id="status" class="status-block"></div>
+  </details>
+
+  <div class="console-section">
+    <div class="section-title">HELP</div>
+    <div class="helper-text">Stop-and-snap calibration: hover → snap pairs → solve.</div>
+    <div class="btn-row">
+      <button id="wizResetBtn" class="btn">1) Reset</button>
+      <button id="wizSnapBtn" class="btn">2) Hover & Snap</button>
+      <button id="wizSolveBtn" class="btn">3) Solve</button>
+    </div>
+    <div id="wizStatus" class="status-block"></div>
+  </div>
+
+  <canvas id="autoAlignChart" width="420" height="70"></canvas>
+  <div id="geoDebug" class="status-block"></div>
+
+  <div class="helper-text">Directions: ↑ Left, ↓ Right, ← Back, → Forward</div>
+
+  <div class="section-divider"></div>
+
+  <div class="console-section">
+    <div class="section-title">MISSION</div>
+    <div class="helper-text">Draw area on Geo Map, set altitude, create/start/abort.</div>
+    <div class="btn-row">
+      <label class="inline-label">Altitude (m):</label>
+      <input id="missionAlt" class="input" type="number" min="1" step="1" value="10" />
+      <button id="missionCreateBtn" class="btn">Create</button>
+      <button id="missionStartBtn" class="btn-primary">Start</button>
+      <button id="missionAbortBtn" class="btn-danger">Abort</button>
+      <button id="returnHomeBtn" class="btn">🏠 Return Home</button>
+    </div>
+  </div>
+</div>
+
+<div id="map"></div>
+<div id="geoMap"></div>
+<div id="slamMiniMap"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+window.onload = () => {
+const API_BASE = (location.protocol === "file:") ? "http://localhost:8000" : "";
+	const statusDiv = document.getElementById("status");
+	const geoDebugDiv = document.getElementById("geoDebug");
+	const controlPanel = document.getElementById("controlPanel");
+	const darkModeBtn = document.getElementById("darkModeBtn");
+	const consoleToggleBtn = document.getElementById("consoleToggleBtn");
+	const startBtn = document.getElementById("startBtn");
+		const stopBtn = document.getElementById("stopBtn");
+		const restartBtn = document.getElementById("restartBtn");
+		const toggleGeoBtn = document.getElementById("toggleGeoBtn");
+		const finalizeMapBtn = document.getElementById("finalizeMapBtn");
+		const calibrateBtn = document.getElementById("calibrateBtn");
+		const calibStatusBtn = document.getElementById("calibStatusBtn");
+		const calibrateRunBtn = document.getElementById("calibrateRunBtn");
+		const calibWizardBtn = document.getElementById("calibWizardBtn");
+		const calibStatus = document.getElementById("calibStatus");
+		const slamStateBadge = document.getElementById("slamStateBadge");
+		const navModeBadge = document.getElementById("navModeBadge");
+		const calibWizard = document.getElementById("calibWizard");
+		const wizResetBtn = document.getElementById("wizResetBtn");
+		const wizSnapBtn = document.getElementById("wizSnapBtn");
+		const wizSolveBtn = document.getElementById("wizSolveBtn");
+	const wizStatus = document.getElementById("wizStatus");
+	const autoAlignBtn = document.getElementById("autoAlignBtn");
+	const autoAlignStatus = document.getElementById("autoAlignStatus");
+	const autoAlignChart = document.getElementById("autoAlignChart");
+	const axisModeEl = document.getElementById("axisMode");
+const missionAltEl = document.getElementById("missionAlt");
+	const missionCreateBtn = document.getElementById("missionCreateBtn");
+	const missionStartBtn = document.getElementById("missionStartBtn");
+	const missionAbortBtn = document.getElementById("missionAbortBtn");
+	const returnHomeBtn = document.getElementById("returnHomeBtn");
+
+	let slamState = "mapping";
+	let _missionOverlayBuiltOnce = false;
+	let navMode = "idle"; // "idle" | "calibrated" | "assisted"
+	let axisMode = (localStorage.getItem("slam_axis_mode") || "en_up");
+	let missionHomeLatLng = null; // {lat,lng}
+	// Outbound navigation history (for retracing on Return Home).
+	// Each entry: { lat, lng, x, y, z } where x/y/z are AirSim meters (NED).
+	let navOutHistory = [];
+	let navReturnRunning = false;
+
+	// Console UI helpers (optional).
+	try { document.body.classList.add("console-sidebar-mode"); } catch (e) {}
+	if (consoleToggleBtn) {
+	  consoleToggleBtn.onclick = () => {
+	    try {
+	      document.body.classList.toggle("console-sidebar-mode");
+	      document.body.classList.toggle("console-header-mode");
+	    } catch (e) {}
+	  };
+	}
+	if (darkModeBtn) {
+	  darkModeBtn.onclick = () => {
+	    try { document.body.classList.toggle("dark"); } catch (e) {}
+	  };
+	}
+
+	function _setNavMode(mode) {
+	  navMode = String(mode || "idle");
+	  if (!navModeBadge) return;
+	  const label =
+	    navMode === "calibrated" ? "Navigation: Calibrated" :
+	    navMode === "assisted" ? "Navigation: Assisted" :
+	    "Navigation: Idle";
+	  navModeBadge.textContent = `${label} | axes=${axisMode}`;
+	}
+
+	function _setAxisMode(mode) {
+	  axisMode = String(mode || "en_up");
+	  try { localStorage.setItem("slam_axis_mode", axisMode); } catch (e) {}
+	  _setNavMode(navMode);
+	}
+
+	if (axisModeEl) {
+	  axisModeEl.value = axisMode;
+	  axisModeEl.onchange = () => {
+	    _setAxisMode(axisModeEl.value);
+	    // Rebuild overlays with the new axis convention.
+	    if (slamMissionOverlay && lastMissionAreaLatLngsForSlamOverlay) {
+	      buildSlamMissionOverlayFromGeoPolygon(lastMissionAreaLatLngsForSlamOverlay, { force: true }).catch(() => {});
+	    }
+	  };
+	}
+
+	function _setSlamState(state) {
+	  slamState = String(state || "mapping");
+	  if (slamStateBadge) {
+	    const label =
+	      slamState === "mapping" ? "SLAM: Mapping" :
+	      slamState === "localization" ? "SLAM: Localization (frozen)" :
+	      slamState === "calibrating" ? "SLAM: Calibrating" :
+	      `SLAM: ${slamState}`;
+	    slamStateBadge.textContent = label;
+	  }
+	  if (slamState === "mapping") _setNavMode("idle");
+	  if (finalizeMapBtn) finalizeMapBtn.disabled = (slamState !== "mapping");
+	  if (calibrateBtn) calibrateBtn.disabled = (slamState !== "localization");
+	  if (calibrateRunBtn) calibrateRunBtn.disabled = (slamState !== "localization");
+	  if (calibWizardBtn) calibWizardBtn.disabled = (slamState !== "localization");
+	  if (autoAlignBtn) autoAlignBtn.disabled = (slamState !== "localization");
+	  // Disable motion UI while calibrating.
+	  const motionDisabled = (slamState === "calibrating");
+	  if (stopBtn) stopBtn.disabled = motionDisabled;
+	  if (restartBtn) restartBtn.disabled = motionDisabled;
+	  if (toggleGeoBtn) toggleGeoBtn.disabled = motionDisabled;
+	  if (missionCreateBtn) missionCreateBtn.disabled = motionDisabled;
+	  if (missionStartBtn) missionStartBtn.disabled = motionDisabled;
+	  if (missionAbortBtn) missionAbortBtn.disabled = motionDisabled;
+	}
+
+	async function refreshSlamSessionStatus() {
+	  try {
+	    const res = await fetch(`${API_BASE}/slam/session/status`);
+	    if (!res.ok) return;
+	    const data = await res.json().catch(() => ({}));
+	    if (!data || !data.ok) return;
+	    if (data.slam_state) _setSlamState(data.slam_state);
+	  } catch (e) {}
+	}
+
+	async function refreshNavModeFromAlign() {
+	  try {
+	    const st = await getSlamAlignStatusCached();
+	    const usable = !!(st && st.has_transform && (st.goto_max_step_m == null || Number(st.goto_max_step_m) > 0));
+	    _setNavMode(usable ? "calibrated" : (slamMissionOverlay ? "assisted" : "idle"));
+	  } catch (e) {
+	    _setNavMode(slamMissionOverlay ? "assisted" : "idle");
+	  }
+	}
+
+	async function ensureMissionAreaForOverlay() {
+	  if (lastMissionAreaLatLngsForSlamOverlay && lastMissionAreaLatLngsForSlamOverlay.length >= 3) {
+	    return lastMissionAreaLatLngsForSlamOverlay;
+	  }
+	  try {
+	    const res = await fetch(`${API_BASE}/mission/last`);
+	    const data = await res.json().catch(() => ({}));
+	    if (!res.ok || !data || !data.ok) return null;
+	    if (data.origin && typeof data.origin.lat === "number" && typeof data.origin.lng === "number") {
+	      geoOrigin = { lat: data.origin.lat, lng: data.origin.lng };
+	    }
+	    if (typeof data.yaw_deg === "number") geoYawDeg = data.yaw_deg;
+	    if (typeof data.offset_x_m === "number") geoOffsetX = data.offset_x_m;
+	    if (typeof data.offset_y_m === "number") geoOffsetY = data.offset_y_m;
+	    try { refreshMapImageOverlay(); } catch (e) {}
+	    if (Array.isArray(data.mission_area) && data.mission_area.length >= 3) {
+	      lastMissionAreaLatLngsForSlamOverlay = data.mission_area.map(p => ({ lat: p.lat, lng: p.lng }));
+	      return lastMissionAreaLatLngsForSlamOverlay;
+	    }
+	  } catch (e) {}
+	  return null;
+	}
+
+	function _computeMissionCenterLatLng(latlngs) {
+	  if (!latlngs || latlngs.length < 3) return null;
+	  // Simple average is stable enough for small mission polygons (lat/lng spans are tiny).
+	  let sLat = 0.0;
+	  let sLng = 0.0;
+	  let n = 0;
+	  for (const p of latlngs) {
+	    if (!p) continue;
+	    const lat = Number(p.lat);
+	    const lng = Number(p.lng);
+	    if (!isFinite(lat) || !isFinite(lng)) continue;
+	    sLat += lat;
+	    sLng += lng;
+	    n += 1;
+	  }
+	  if (n < 3) return null;
+	  return { lat: sLat / n, lng: sLng / n };
+	}
+
+	function _isInsidePolygonLatLng(point, poly) {
+	  if (!point || !poly || poly.length < 3) return false;
+	  const x = Number(point.lng);
+	  const y = Number(point.lat);
+	  if (!isFinite(x) || !isFinite(y)) return false;
+	  let inside = false;
+	  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+	    const xi = Number(poly[i].lng), yi = Number(poly[i].lat);
+	    const xj = Number(poly[j].lng), yj = Number(poly[j].lat);
+	    const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi);
+	    if (intersect) inside = !inside;
+	  }
+	  return inside;
+	}
+
+	async function _gotoLatLng(lat, lng, altitude_m) {
+	  const res = await fetch(`${API_BASE}/mission/goto`, {
+	    method: "POST",
+	    headers: { "Content-Type": "application/json" },
+	    body: JSON.stringify({ lat, lng, altitude_m }),
+	  });
+	  const data = await res.json().catch(() => ({}));
+	  if (!res.ok || !data || !data.ok) {
+	    throw new Error((data && (data.error || data.detail)) ? (data.error || data.detail) : `goto failed (${res.status})`);
+	  }
+	  return data;
+	}
+
+	function _sleep(ms) {
+	  return new Promise((r) => setTimeout(r, ms));
+	}
+
+	async function _waitUntilNearXY(targetX, targetY, tolM = 1.2, timeoutMs = 90000) {
+	  const t0 = Date.now();
+	  while (Date.now() - t0 < timeoutMs) {
+	    try {
+	      const pr = await fetch(`${API_BASE}/mission/drone/pose`);
+	      const pd = await pr.json().catch(() => ({}));
+	      if (pr.ok && pd && pd.ok) {
+	        const cx = Number(pd.x || 0);
+	        const cy = Number(pd.y || 0);
+	        const dx = Number(targetX) - cx;
+	        const dy = Number(targetY) - cy;
+	        const d = Math.sqrt(dx * dx + dy * dy);
+	        if (isFinite(d) && d <= tolM) return true;
+	      }
+	    } catch (e) {}
+	    await _sleep(350);
+	  }
+	  return false;
+	}
+
+	async function _getCurrentXY() {
+	  try {
+	    const pr = await fetch(`${API_BASE}/mission/drone/pose`);
+	    const pd = await pr.json().catch(() => ({}));
+	    if (pr.ok && pd && pd.ok) return { x: Number(pd.x || 0), y: Number(pd.y || 0) };
+	  } catch (e) {}
+	  return null;
+	}
+
+	if (returnHomeBtn) {
+	  returnHomeBtn.onclick = async () => {
+	    if (slamState !== "localization") {
+	      statusDiv.innerText = "⚠️ Return Home is only enabled after Finish Map Building (localization).";
+	      return;
+	    }
+	    if (navReturnRunning) {
+	      statusDiv.innerText = "⚠️ Return Home already running.";
+	      return;
+	    }
+	    try {
+	      const altitude_m = parseFloat(missionAltEl.value || "10");
+	      // Prefer cached center; otherwise fetch last mission.
+	      if (!missionHomeLatLng) {
+	        const area = await ensureMissionAreaForOverlay();
+	        missionHomeLatLng = _computeMissionCenterLatLng(area);
+	      }
+	      if (!missionHomeLatLng) {
+	        statusDiv.innerText = "❌ No mission home available. Create a mission first.";
+	        return;
+	      }
+	      navReturnRunning = true;
+	      statusDiv.innerText = "⏳ Returning home (retracing path)...";
+
+	      // Build retrace route:
+	      // - visit outbound targets in reverse
+	      // - then go to mission center
+	      const route = (navOutHistory || []).slice().reverse();
+
+	      const homeXY = latLngToAirsimXY(missionHomeLatLng.lat, missionHomeLatLng.lng);
+	      const homeX = Number(homeXY.x);
+	      const homeY = Number(homeXY.y);
+
+	      // Execute reverse route waypoints first.
+	      for (let i = 0; i < route.length; i++) {
+	        const wp = route[i];
+	        if (!wp) continue;
+	        // If we're already at/near this waypoint, skip issuing a redundant goto.
+	        try {
+	          const cur = await _getCurrentXY();
+	          if (cur && isFinite(wp.x) && isFinite(wp.y)) {
+	            const dx0 = Number(wp.x) - cur.x;
+	            const dy0 = Number(wp.y) - cur.y;
+	            const d0 = Math.sqrt(dx0 * dx0 + dy0 * dy0);
+	            if (isFinite(d0) && d0 <= 1.2) continue;
+	          }
+	        } catch (e) {}
+	        statusDiv.innerText = `⏳ Returning home (step ${i + 1}/${route.length + 1})...`;
+	        const d = await _gotoLatLng(wp.lat, wp.lng, altitude_m);
+	        const t = d && d.target ? d.target : null;
+	        if (t && typeof t.x === "number" && typeof t.y === "number") {
+	          await _waitUntilNearXY(t.x, t.y, 1.2, 60000);
+	        } else {
+	          await _sleep(1200);
+	        }
+	      }
+
+	      // Finally go home (mission center). Send once more to ensure it's last.
+	      statusDiv.innerText = `⏳ Returning home (final)...`;
+	      await _gotoLatLng(missionHomeLatLng.lat, missionHomeLatLng.lng, altitude_m);
+	      if (isFinite(homeX) && isFinite(homeY)) {
+	        await _waitUntilNearXY(homeX, homeY, 1.2, 90000);
+	      }
+	      statusDiv.innerText = "✅ Returned home.";
+	      navOutHistory = [];
+	    } catch (e) {
+	      statusDiv.innerText = `❌ Return Home failed: ${String(e && e.message ? e.message : e)}`;
+	    } finally {
+	      navReturnRunning = false;
+	    }
+	  };
+	}
+
+	_setSlamState("mapping");
+	setInterval(refreshSlamSessionStatus, 1000);
+
+	if (finalizeMapBtn) {
+	  finalizeMapBtn.onclick = async () => {
+	    try {
+	      finalizeMapBtn.disabled = true;
+	      const res = await fetch(`${API_BASE}/slam/session/finalize_map`, { method: "POST" });
+	      const data = await res.json().catch(() => ({}));
+	      if (!res.ok || !data || !data.ok) {
+	        const err = (data && (data.error || data.detail)) ? (data.error || data.detail) : `(${res.status})`;
+	        statusDiv.innerText = `❌ Finalize map failed: ${err}`;
+	        await refreshSlamSessionStatus();
+	        return;
+	      }
+	      statusDiv.innerText = "✅ SLAM map finalized. Localization mode active.";
+	      _setSlamState("localization");
+	      try { await refreshNavModeFromAlign(); } catch (e) {}
+	    } catch (e) {
+	      statusDiv.innerText = "❌ Finalize map failed (backend)";
+	      await refreshSlamSessionStatus();
+	    }
+	  };
+	}
+
+	startBtn.onclick = async () => {
+	  statusDiv.innerText = "⏳ Starting SLAM...";
+
+	  try {
+	    const res = await fetch(`${API_BASE}/slam/start`, {
+	      method: "POST"
+	    });
+
+	    const data = await res.json();
+
+	    if (data.ok) {
+	      statusDiv.innerText =
+	        "✅ SLAM running\n📡 UDP listener active\n🚁 Ready to map";
+	      startBtn.disabled = true;
+	      _setSlamState("mapping");
+	    } else {
+	      statusDiv.innerText = "❌ Failed: " + data.msg;
+	    }
+
+	  } catch (e) {
+	    statusDiv.innerText = "❌ Backend not reachable";
+	  }
+	};
+async function startSlam() {
+  document.getElementById("status").innerText = "Starting...";
+  const res = await fetch(`${API_BASE}/slam/start`, { method: "POST" });
+  const data = await res.json();
+   document.getElementById("status").innerText = data.msg || "Started";
+}
+
+console.log("Initializing SLAM map...");
+// Default view is SLAM map; show minimap immediately.
+try { document.getElementById("slamMiniMap").style.display = "block"; } catch (e) {}
+document.getElementById("stopBtn").onclick = async () => {
+  console.log("🛑 Stop button clicked");
+
+  const res = await fetch(`${API_BASE}/slam/drone/stop`, { method: "POST" });
+  console.log("Response status:", res.status);
+
+  const data = await res.json();
+  console.log(data);
+};
+
+	restartBtn.onclick = async () => {
+	  console.log("🔄 Restart button clicked");
+	  const res = await fetch(`${API_BASE}/slam/drone/restart`, { method: "POST" });
+	  console.log("Response status:", res.status);
+	  const data = await res.json();
+	  console.log(data);
+	};
+
+		async function refreshCalibStatus() {
+		  try {
+		    const res = await fetch(`${API_BASE}/slam/calibrate/status`);
+		    if (!res.ok) return;
+		    const data = await res.json().catch(() => ({}));
+		    if (!data || !data.ok) return;
+		    if (data.slam_state) _setSlamState(data.slam_state);
+		    if (data.running) {
+		      calibStatus.textContent =
+		        `calib: RUNNING` +
+		        (data.status ? ` | ${data.status}` : "") +
+		        (typeof data.pairs === "number" ? ` | pairs=${data.pairs}` : "") +
+		        (typeof data.rmse_m === "number" ? ` | rmse=${Number(data.rmse_m).toFixed(2)}m` : "") +
+		        (data.quality ? ` | quality=${data.quality}` : "") +
+		        (data.error ? ` | err=${data.error}` : "");
+		    } else if (
+		      data.status ||
+		      data.error ||
+		      (typeof data.rmse_m === "number") ||
+		      (typeof data.pairs === "number") ||
+		      data.quality
+		    ) {
+		      const rmse = (typeof data.rmse_m === "number") ? Number(data.rmse_m) : null;
+		      const qual = data.quality ? String(data.quality) : null;
+		      const warn = (qual === "poor") ? " | ⚠️ quality=poor" : "";
+		      const okRmse = (rmse !== null && isFinite(rmse) && rmse < 2.0) ? " | ✅ rmse<2.0m" : "";
+		      calibStatus.textContent =
+		        `calib: ${data.status || "idle"}` +
+		        (rmse !== null ? ` | rmse=${rmse.toFixed(2)}m` : "") +
+		        (typeof data.pairs === "number" ? ` | pairs=${data.pairs}` : "") +
+		        (qual ? ` | quality=${qual}` : "") +
+		        warn +
+		        okRmse +
+		        (data.error ? ` | err=${data.error}` : "");
+
+		      // If we have a mission polygon, keep the SLAM mission overlay up-to-date.
+		      // Overlay rendering is a UI aid and does not imply calibration success.
+		      if (
+		        !_missionOverlayBuiltOnce &&
+		        (data.status === "done" || data.status === "failed" || data.status === "error") &&
+		        true
+		      ) {
+		        _missionOverlayBuiltOnce = true;
+		        ensureMissionAreaForOverlay()
+		          .then((area) => {
+		            if (!area || area.length < 3) return;
+		            return buildSlamMissionOverlayFromGeoPolygon(area, { force: true });
+		          })
+		          .catch((e) => {
+		            console.warn("SLAM mission overlay build after calibration finished failed", e);
+		          });
+		      }
+		    } else {
+		      calibStatus.textContent = "";
+		    }
+		  } catch (e) {}
+		}
+
+		calibrateBtn.onclick = async () => {
+		  if (slamState !== "localization") {
+		    calibStatus.textContent = "calib: blocked | Finalize map first (SLAM must be in localization).";
+		    return;
+		  }
+		  try {
+		    calibStatus.textContent = "calib: solving from recorded mission pairs...";
+		    const res = await fetch(`${API_BASE}/slam/calibrate/solve_recorded`, { method: "POST" });
+		    const data = await res.json().catch(() => ({}));
+		    if (!res.ok || !data || !data.ok) {
+		      const err = (data && (data.error || data.detail)) ? (data.error || data.detail) : `(${res.status})`;
+		      calibStatus.textContent = `calib: failed | ${err}`;
+		      await refreshSlamSessionStatus();
+		      const area = await ensureMissionAreaForOverlay();
+		      if (area && area.length >= 3) {
+		        buildSlamMissionOverlayFromGeoPolygon(area, { force: true }).catch(() => {});
+		        _missionOverlayBuiltOnce = true;
+		      }
+		      try { await refreshNavModeFromAlign(); } catch (e) {}
+		      return;
+		    }
+		    calibStatus.textContent =
+		      `calib: done` +
+		      (typeof data.rmse_m === "number" ? ` | rmse=${Number(data.rmse_m).toFixed(2)}m` : "") +
+		      (data.quality ? ` | quality=${data.quality}` : "");
+		    await refreshSlamSessionStatus();
+		    const area = await ensureMissionAreaForOverlay();
+		    if (area && area.length >= 3) {
+		      buildSlamMissionOverlayFromGeoPolygon(area, { force: true }).catch(() => {});
+		      _missionOverlayBuiltOnce = true;
+		    }
+		    try { await refreshNavModeFromAlign(); } catch (e) {}
+		  } catch (e) {
+		    calibStatus.textContent = "calib: failed";
+		    await refreshSlamSessionStatus();
+		    const area = await ensureMissionAreaForOverlay();
+		    if (area && area.length >= 3) {
+		      buildSlamMissionOverlayFromGeoPolygon(area, { force: true }).catch(() => {});
+		      _missionOverlayBuiltOnce = true;
+		    }
+		    try { await refreshNavModeFromAlign(); } catch (e) {}
+		  }
+		};
+
+		if (calibStatusBtn) {
+		  calibStatusBtn.onclick = async () => {
+		    await refreshCalibStatus();
+		  };
+		}
+
+		if (calibrateRunBtn) {
+		  calibrateRunBtn.onclick = async () => {
+		    if (slamState !== "localization") {
+		      calibStatus.textContent = "calib: blocked | Finalize map first (SLAM must be in localization).";
+		      return;
+		    }
+		    try {
+		      _setSlamState("calibrating");
+		      calibStatus.textContent = "calib: RUNNING | stop-and-snap (waypoints)...";
+		      fetch(`${API_BASE}/slam/calibrate/run`, { method: "POST" })
+		        .then(r => r.json().catch(() => ({})))
+		        .then(data => {
+		          if (data && data.ok) {
+		            // status polling will show details; keep short here
+		            calibStatus.textContent = `calib: done | rmse=${Number(data.rmse_m).toFixed(2)}m`;
+		            if (lastMissionAreaLatLngsForSlamOverlay && lastMissionAreaLatLngsForSlamOverlay.length >= 3) {
+		              buildSlamMissionOverlayFromGeoPolygon(lastMissionAreaLatLngsForSlamOverlay, { force: true }).catch(() => {});
+		              _missionOverlayBuiltOnce = true;
+		            }
+		            refreshNavModeFromAlign().catch(() => {});
+		          } else if (data && data.detail) {
+		            calibStatus.textContent = `calib: failed | ${data.detail}`;
+		            if (lastMissionAreaLatLngsForSlamOverlay && lastMissionAreaLatLngsForSlamOverlay.length >= 3) {
+		              buildSlamMissionOverlayFromGeoPolygon(lastMissionAreaLatLngsForSlamOverlay, { force: true }).catch(() => {});
+		              _missionOverlayBuiltOnce = true;
+		            }
+		            refreshNavModeFromAlign().catch(() => {});
+		          }
+		        })
+		        .catch(() => {
+		          // ignore; refreshCalibStatus will show error if any
+		        });
+		    } catch (e) {
+		      calibStatus.textContent = "calib: failed";
+		    }
+		  };
+		}
+
+	function _showWizard(text) {
+	  if (!wizStatus) return;
+	  wizStatus.textContent = String(text || "");
+	}
+
+	async function refreshWizardStatus() {
+	  if (!calibWizard || calibWizard.style.display === "none") return;
+	  try {
+	    const res = await fetch(`${API_BASE}/slam/align/status`);
+	    if (!res.ok) return;
+	    const data = await res.json().catch(() => ({}));
+	    if (!data || !data.ok) return;
+	    let w = null;
+	    try {
+	      const wres = await fetch(`${API_BASE}/slam/align/wizard/status`);
+	      w = await wres.json().catch(() => null);
+	    } catch (e) {}
+	    const rmse = (typeof data.rmse_m === "number") ? `rmse=${Number(data.rmse_m).toFixed(2)}m` : "rmse=?";
+	    const pairs = (typeof data.pairs === "number") ? `pairs=${data.pairs}` : "pairs=?";
+	    const axes = (data.slam_axes && data.slam_axes.length) ? `axes=${data.slam_axes.join(",")}` : "";
+	    const model = data.model ? `model=${data.model}` : "";
+	    const gate = (typeof data.goto_max_step_m === "number") ? `goto_max_step_m=${Number(data.goto_max_step_m).toFixed(1)}` : "";
+	    const udp = (w && w.udp) ? w.udp : null;
+	    const udpPackets = udp && typeof udp.packets === "number" ? udp.packets : null;
+	    const udpAge = udp && typeof udp.last_packet_age_s === "number" ? udp.last_packet_age_s : null;
+	    const poseAge = (w && typeof w.airsim_pose_age_s === "number") ? w.airsim_pose_age_s : null;
+	    const health =
+	      (udpPackets != null ? `\nudp_packets=${udpPackets}` : "") +
+	      (udpAge != null ? ` | udp_age=${udpAge.toFixed(2)}s` : "") +
+	      (poseAge != null ? ` | airsim_pose_age=${poseAge.toFixed(2)}s` : "");
+	    _showWizard(
+	      `wizard: ${pairs} | ${rmse}` +
+	      (axes ? ` | ${axes}` : "") +
+	      (model ? ` | ${model}` : "") +
+	      (gate ? ` | ${gate}` : "") +
+	      (data.quality ? `\nquality=${data.quality}` : "") +
+	      health
+	    );
+	  } catch (e) {}
+	}
+
+	if (calibWizardBtn) {
+	  calibWizardBtn.onclick = async () => {
+	    const visible = calibWizard.style.display !== "none";
+	    calibWizard.style.display = visible ? "none" : "block";
+	    if (!visible) {
+	      _showWizard("wizard: open\n1) Reset\n2) Move drone, then Hover & Snap repeatedly (10–20 snaps)\n3) Solve\n");
+	      try { await fetch(`${API_BASE}/slam/align/wizard/start`, { method: "POST" }); } catch (e) {}
+	      await refreshWizardStatus();
+	    } else {
+	      try { await fetch(`${API_BASE}/slam/align/wizard/stop`, { method: "POST" }); } catch (e) {}
+	    }
+	  };
+	}
+
+	if (wizResetBtn) {
+	  wizResetBtn.onclick = async () => {
+	    try {
+	      _showWizard("wizard: resetting...");
+	      const res = await fetch(`${API_BASE}/slam/align/reset_all`, { method: "POST" });
+	      const data = await res.json().catch(() => ({}));
+	      if (!res.ok || !data || !data.ok) {
+	        _showWizard(`wizard: reset failed (${res.status})`);
+	        return;
+	      }
+	      _showWizard("wizard: reset ok. Now move + hover + snap repeatedly.");
+	      await refreshWizardStatus();
+	    } catch (e) {
+	      _showWizard("wizard: reset failed (backend)");
+	    }
+	  };
+	}
+
+	if (wizSnapBtn) {
+	  wizSnapBtn.onclick = async () => {
+	    try {
+	      // Force hover first (stop-and-snap).
+	      await fetch(`${API_BASE}/slam/drone/stop`, { method: "POST" }).catch(() => null);
+	      const res = await fetch(`${API_BASE}/slam/calibrate/snap`, { method: "POST" });
+	      const data = await res.json().catch(() => ({}));
+	      if (!res.ok || !data || !data.ok) {
+	        const detail = data && (data.detail || data.msg || data.error);
+	        _showWizard(`wizard: snap failed (${res.status})${detail ? ` | ${detail}` : ""}`);
+	        return;
+	      }
+	      _showWizard(`wizard: snap ok | pairs=${data.pairs}`);
+	      await refreshWizardStatus();
+	    } catch (e) {
+	      _showWizard("wizard: snap failed (backend)");
+	    }
+	  };
+	}
+
+	if (wizSolveBtn) {
+	  wizSolveBtn.onclick = async () => {
+	    try {
+	      _showWizard("wizard: solving...");
+	      const res = await fetch(`${API_BASE}/slam/calibrate/solve`, { method: "POST" });
+	      const data = await res.json().catch(() => ({}));
+	      if (!res.ok || !data || !data.ok) {
+	        const detail = data && (data.detail || data.msg || data.error);
+	        _showWizard(`wizard: solve failed (${res.status})${detail ? ` | ${detail}` : ""}`);
+	        return;
+	      }
+	      _showWizard(`wizard: solved | rmse=${Number(data.rmse_m).toFixed(2)}m | quality=${data.quality || "?"}`);
+	      await refreshWizardStatus();
+	    } catch (e) {
+	      _showWizard("wizard: solve failed (backend)");
+	    }
+	  };
+	}
+
+	async function refreshAutoAlignStatus() {
+    try {
+      const res = await fetch(`${API_BASE}/slam/align/auto/status`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      if (!data || !data.ok) return;
+      const running = !!data.running;
+      autoAlignBtn.innerText = running ? "Auto Align: Stop" : "Auto Align: Start";
+      const udpPackets = data.udp && typeof data.udp.packets === "number" ? data.udp.packets : null;
+      const udpAge = data.udp && typeof data.udp.last_packet_age_s === "number" ? data.udp.last_packet_age_s : null;
+      const udpStr =
+        udpPackets != null
+          ? ` | udp=${udpPackets}${udpAge != null ? ` (age=${udpAge.toFixed(2)}s)` : ""}`
+          : "";
+      autoAlignStatus.textContent =
+        `auto-align: ${running ? "ON" : "OFF"} | pairs=${data.pairs_collected ?? "?"}` +
+        (data.last_solve_rmse_m != null ? ` | rmse=${Number(data.last_solve_rmse_m).toFixed(2)}m` : "") +
+        udpStr +
+        (data.last_error ? ` | err=${data.last_error}` : "");
+    } catch (e) {
+      // ignore
+	}
+  }
+
+function drawAutoAlignChart(items) {
+  try {
+    const ctx = autoAlignChart.getContext("2d");
+    const w = autoAlignChart.width;
+    const h = autoAlignChart.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
+
+    // Extract RMSE series.
+    const pts = (items || []).filter(it => typeof it.rmse_m === "number" && isFinite(it.rmse_m));
+    if (pts.length < 2) {
+      ctx.fillStyle = "#666";
+      ctx.font = "11px Arial";
+      ctx.fillText("Auto-align RMSE: waiting for attempts...", 8, 20);
+      return;
+    }
+
+    const rmse = pts.map(p => p.rmse_m);
+    const minV = Math.min(...rmse);
+    const maxV = Math.max(...rmse);
+    const pad = 6;
+    const yMin = pad;
+    const yMax = h - pad;
+    const xMin = pad;
+    const xMax = w - pad;
+    const span = Math.max(1e-6, maxV - minV);
+
+    function x(i) {
+      return xMin + (i / (pts.length - 1)) * (xMax - xMin);
+    }
+    function y(v) {
+      return yMax - ((v - minV) / span) * (yMax - yMin);
+    }
+
+    // Grid + labels
+    ctx.strokeStyle = "#eee";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(xMin, yMin);
+    ctx.lineTo(xMin, yMax);
+    ctx.lineTo(xMax, yMax);
+    ctx.stroke();
+
+    ctx.fillStyle = "#444";
+    ctx.font = "10px Arial";
+    ctx.fillText(`min ${minV.toFixed(1)}m`, xMin + 2, yMin + 10);
+    ctx.fillText(`max ${maxV.toFixed(1)}m`, xMin + 2, yMax - 2);
+
+    // Target line (2.5m acceptance threshold)
+    const thr = 2.5;
+    if (thr >= minV && thr <= maxV) {
+      ctx.strokeStyle = "#d66";
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(xMin, y(thr));
+      ctx.lineTo(xMax, y(thr));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#d66";
+      ctx.fillText("2.5m", xMax - 34, y(thr) - 2);
+    }
+
+    // Line
+    ctx.strokeStyle = "#06c";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const xx = x(i);
+      const yy = y(pts[i].rmse_m);
+      if (i === 0) ctx.moveTo(xx, yy);
+      else ctx.lineTo(xx, yy);
+    }
+    ctx.stroke();
+
+    // Last point marker
+    const last = pts[pts.length - 1];
+    ctx.fillStyle = (last.accepted ? "#0a0" : "#c60");
+    ctx.beginPath();
+    ctx.arc(x(pts.length - 1), y(last.rmse_m), 3, 0, Math.PI * 2);
+    ctx.fill();
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function refreshAutoAlignHistory() {
+  try {
+    const res = await fetch(`${API_BASE}/slam/align/auto/history?limit=240`);
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    if (!data || !data.ok) return;
+    drawAutoAlignChart(data.items || []);
+  } catch (e) {
+    // ignore
+  }
+}
+
+autoAlignBtn.onclick = async () => {
+  try {
+    // Toggle based on current status
+    const res = await fetch(`${API_BASE}/slam/align/auto/status`);
+    const st = await res.json().catch(() => ({}));
+    const running = !!(st && st.ok && st.running);
+    const endpoint = running ? "/slam/align/auto/stop" : "/slam/align/auto/start";
+    await fetch(`${API_BASE}${endpoint}`, { method: "POST" });
+    await refreshAutoAlignStatus();
+  } catch (e) {
+    console.error(e);
+  }
+};
+
+setInterval(refreshAutoAlignStatus, 2000);
+setInterval(refreshAutoAlignHistory, 2000);
+setInterval(refreshCalibStatus, 500);
+setInterval(refreshWizardStatus, 700);
+refreshAutoAlignStatus();
+refreshAutoAlignHistory();
+
+// Keeping SLAM map in keyframes mode; UDP diagnostics disabled by default.
+
+  // --- Create LOCAL SLAM MAP ---
+  const map = L.map("map", {
+  crs: L.CRS.Simple,
+  minZoom: -5,
+  zoomControl: true,
+});
+
+const SCALE = 20; // pixels per meter (tune)
+const GOTO_Z = -10.0; // NED: negative is up (match drone_motion.py ALTITUDE)
+map.setView([0, 0], 0);
+
+	// optional: draw bounds (e.g. 200m x 200m)
+	const bounds = [[-200*SCALE, -200*SCALE], [200*SCALE, 200*SCALE]];
+	let slamWorldRect = L.rectangle(bounds, {weight:1}).addTo(map);
+	map.fitBounds(bounds);
+
+	// --- SLAM minimap (game-like overview) ---
+	const miniMapEl = document.getElementById("slamMiniMap");
+	const miniMap = L.map("slamMiniMap", {
+	  crs: L.CRS.Simple,
+	  zoomControl: false,
+	  attributionControl: false,
+	  scrollWheelZoom: false,
+	  doubleClickZoom: false,
+	  boxZoom: false,
+	  keyboard: false,
+	  touchZoom: false,
+	  dragging: false,
+	});
+	// Start slightly zoomed-out so the overview is easier to read.
+	miniMap.setView([0, 0], -4);
+	let miniBoundsRect = L.rectangle(bounds, { weight: 1, color: "#444", fill: false, interactive: false }).addTo(miniMap);
+
+	// Keep a mission crop overlay layer on the SLAM map (cropped from the map image).
+	let slamMissionOverlay = null;        // L.imageOverlay
+	let slamMissionOutline = null;        // L.polygon
+	let slamMissionViewBounds = null;     // L.latLngBounds (crop bounds)
+	let slamMissionViewLocked = false;
+	let slamSavedZoom = null;
+
+	let lastMissionAreaLatLngsForSlamOverlay = null;
+
+  // --- Drone marker ---
+  const droneIcon = L.divIcon({
+    html: "🚁",
+    iconSize: [30, 30],
+    className: ""
+  });
+
+  let droneMarker = L.marker([0, 0], { icon: droneIcon }).addTo(map);
+  let miniDroneMarker = L.marker([0, 0], { icon: droneIcon, interactive: false }).addTo(miniMap);
+
+  // --- Trajectory ---
+  let polyline = L.polyline([], { color: "red" }).addTo(map);
+  let miniPolyline = L.polyline([], { color: "red", weight: 2, interactive: false }).addTo(miniMap);
+const JUMP_M = 3.0; // split polyline when SLAM relocalizes (tune 2–5m)
+
+async function getSlamAlignStatusCached() {
+  // Cache in-memory to avoid spamming status endpoint every 300ms.
+  const now = Date.now();
+  if (window.__slamAlignCache && (now - window.__slamAlignCache.ts) < 1500) {
+    return window.__slamAlignCache.data;
+  }
+  const data = await getSlamAlignStatus();
+  window.__slamAlignCache = { ts: now, data };
+  return data;
+}
+
+function slamKeyframeToAirsimXY(p, alignStatus) {
+  // Convert one SLAM keyframe point [x,y,z] into AirSim XY using the calibrated transform.
+  // alignStatus.slam_axes tells us which 2 SLAM components represent the ground plane.
+  const scale = Number(alignStatus.scale || 1.0) || 1.0;
+  const R = alignStatus.R || [[1, 0], [0, 1]];
+  const t = alignStatus.t || [0, 0];
+  const r11 = Number(R[0][0]), r12 = Number(R[0][1]);
+  const r21 = Number(R[1][0]), r22 = Number(R[1][1]);
+  const tx = Number(t[0]), ty = Number(t[1]);
+  const axes = (alignStatus.slam_axes && alignStatus.slam_axes.length === 2) ? alignStatus.slam_axes : ["x", "z"];
+  const sx = Number(p[0] || 0);
+  const sy = Number(p[1] || 0);
+  const sz = Number(p[2] || 0);
+  const u = (axes[0] === "x") ? sx : (axes[0] === "y") ? sy : sz;
+  const v = (axes[1] === "x") ? sx : (axes[1] === "y") ? sy : sz;
+  const x = scale * (r11 * u + r12 * v) + tx;
+  const y = scale * (r21 * u + r22 * v) + ty;
+  return { x, y };
+}
+
+function airsimXYToSlamMapLatLng(x, y) {
+  // SLAM maps are in CRS.Simple; axisMode controls how AirSim (north=x, east=y) is displayed.
+  // CRS.Simple: lng increases to the right, lat increases downward.
+  const ax = Number(x || 0); // north
+  const ay = Number(y || 0); // east
+  if (axisMode === "en_up") {
+    // east -> right, north -> up
+    return [-ax * SCALE, ay * SCALE];
+  }
+  if (axisMode === "en_down") {
+    // east -> right, north -> down
+    return [ax * SCALE, ay * SCALE];
+  }
+  if (axisMode === "ne_up") {
+    // north -> right, east -> up
+    return [-ay * SCALE, ax * SCALE];
+  }
+  // "ne_down": north -> right, east -> down
+  return [ay * SCALE, ax * SCALE];
+}
+
+function slamMapLatLngToAirsimXY(lat, lng) {
+  // Inverse of airsimXYToSlamMapLatLng.
+  const la = Number(lat || 0) / SCALE;
+  const lo = Number(lng || 0) / SCALE;
+  if (axisMode === "en_up") {
+    return { x: -la, y: lo };
+  }
+  if (axisMode === "en_down") {
+    return { x: la, y: lo };
+  }
+  if (axisMode === "ne_up") {
+    return { x: lo, y: -la };
+  }
+  return { x: lo, y: la };
+}
+
+async function updateTrajectory() {
+  try {
+    // In mission-view mode, hide SLAM keyframes and drive the drone marker from AirSim pose
+    // so the user sees clean GPS-like navigation on the cropped mission image.
+    if (slamMissionViewLocked && slamMissionOverlay) {
+      try {
+        const pr = await fetch(`${API_BASE}/mission/drone/pose`);
+        const pd = await pr.json().catch(() => ({}));
+        if (pr.ok && pd && pd.ok) {
+          const ll = airsimXYToSlamMapLatLng(Number(pd.x || 0), Number(pd.y || 0));
+          droneMarker.setLatLng(ll);
+          miniDroneMarker.setLatLng(ll);
+          try { miniBoundsRect.setBounds(map.getBounds()); } catch (e) {}
+        }
+      } catch (e) {}
+      // Ensure keyframe polylines are hidden.
+      try { polyline.setLatLngs([]); } catch (e) {}
+      try { miniPolyline.setLatLngs([]); } catch (e) {}
+      return;
+    }
+
+    const res = await fetch(`${API_BASE}/slam/trajectory`);
+    if (!res.ok) return;
+    const traj = await res.json();
+
+    if (!traj) return;
+
+    // Backend returns either:
+    // - segmented trajectory: [ [ [x,y,z], ... ], [ [x,y,z], ... ] ]
+    // - or a flat list: [ [x,y,z], ... ]
+    const isSegmented = Array.isArray(traj[0]) && Array.isArray(traj[0][0]);
+    const rawSegments = isSegmented ? traj : [traj];
+
+    if (!rawSegments.length) return;
+
+    const pointsCount = isSegmented
+      ? rawSegments.reduce((n, s) => n + ((s && s.length) ? s.length : 0), 0)
+      : (traj.length || 0);
+    if (startBtn.disabled) {
+      statusDiv.innerText = `Keyframes: ${pointsCount}`;
+    }
+
+    const alignStatus = await getSlamAlignStatusCached();
+    // IMPORTANT:
+    // If the transform is "poor" (rmse high), do NOT use it for visualization because it can
+    // collapse/shift the whole SLAM path (making it look "broken"). In that state, we still
+    // show the raw SLAM keyframe path, and click-to-go remains gated/disabled.
+    const canUseAlignForViz = !!(
+      alignStatus &&
+      alignStatus.has_transform &&
+      (alignStatus.goto_max_step_m == null || Number(alignStatus.goto_max_step_m) > 0)
+    );
+
+    // Split each segment again on large jumps (relocalization) so we don't draw
+    // long "fork" lines across teleports.
+    const latlngSegments = [];
+    for (const seg of rawSegments) {
+      if (!seg || seg.length === 0) continue;
+
+      let current = [];
+      for (let i = 0; i < seg.length; i++) {
+        const p = seg[i];
+        if (!p || p.length < 3) continue;
+
+        if (i > 0) {
+          const prev = seg[i - 1];
+          if (prev && prev.length >= 3) {
+            // Compute jump in the displayed coordinate system (AirSim-aligned if available).
+            let jump = 0.0;
+            if (canUseAlignForViz) {
+              const a0 = slamKeyframeToAirsimXY(prev, alignStatus);
+              const a1 = slamKeyframeToAirsimXY(p, alignStatus);
+              const dx = a1.x - a0.x;
+              const dy = a1.y - a0.y;
+              jump = Math.sqrt(dx * dx + dy * dy);
+            } else {
+              const dx = p[0] - prev[0];
+              const dz = p[2] - prev[2];
+              jump = Math.sqrt(dx * dx + dz * dz);
+            }
+            if (jump > JUMP_M) {
+              if (current.length) latlngSegments.push(current);
+              current = [];
+            }
+          }
+        }
+
+        if (canUseAlignForViz) {
+          // Display AirSim-aligned keyframes (better for click-to-go + mission overlay).
+          const axy = slamKeyframeToAirsimXY(p, alignStatus);
+          current.push(airsimXYToSlamMapLatLng(axy.x, axy.y));
+        } else {
+          // Fallback: raw SLAM frame (still useful for viewing tracking).
+          const x = p[0];
+          const z = p[2];
+          current.push([z * SCALE, x * SCALE]);
+        }
+      }
+      if (current.length) latlngSegments.push(current);
+    }
+
+    if (!latlngSegments.length) return;
+
+    if (latlngSegments.some(seg => seg.length >= 2)) {
+      polyline.setLatLngs(latlngSegments);
+      miniPolyline.setLatLngs(latlngSegments);
+    }
+
+    const lastSeg = latlngSegments[latlngSegments.length - 1];
+    const last = lastSeg[lastSeg.length - 1];
+    if (last) {
+      droneMarker.setLatLng(last);
+      miniDroneMarker.setLatLng(last);
+      if (!slamMissionViewLocked && !map.getBounds().contains(last)) {
+        map.panTo(last, { animate: false });
+      }
+    }
+
+    // Show current main-map viewport on minimap.
+    try {
+      miniBoundsRect.setBounds(map.getBounds());
+    } catch (e) {}
+
+    // don't pan every time (causes jitter), only if far:
+    // map.panTo(last, { animate: true, duration: 0.2 });
+  } catch (e) {
+    console.error("Trajectory error:", e);
+  }
+}
+
+setInterval(updateTrajectory, 300);
+
+
+	map.on("click", async (e) => {
+  // IMPORTANT:
+  // The SLAM map is visualized in AirSim-aligned coordinates (when alignment is available),
+  // so click-to-go uses AirSim XY in meters.
+	  if (slamState === "calibrating") {
+	    statusDiv.innerText = "⚠️ Calibration running. Motion commands are disabled.";
+	    return;
+	  }
+	  if (slamState !== "localization") {
+	    statusDiv.innerText = "⚠️ Finalize map first (SLAM must be in localization) to use click-to-go.";
+	    return;
+	  }
+
+  const lat = e.latlng.lat;
+  const lng = e.latlng.lng;
+
+  // Mission-only behavior on the SLAM map:
+  // - if the mission crop overlay is present, only allow clicks inside it
+  // - clicks translate to AirSim XY (meters) and are executed via /mission/goto (same as Geo map)
+  if (!slamMissionOverlay) {
+    statusDiv.innerText = "❌ No mission overlay on SLAM map yet. Create a mission and click Calibrate SLAM to show the mission-only view.";
+    _setNavMode("idle");
+    return;
+  }
+  try {
+    const b = slamMissionOverlay.getBounds();
+    if (b && !b.contains(e.latlng)) {
+      statusDiv.innerText = "⚠️ Click inside the mission image area.";
+      _setNavMode("assisted");
+      return;
+    }
+  } catch (e3) {}
+  _setNavMode("assisted");
+
+  const target = {
+    // Convert click from SLAM-map CRS.Simple into AirSim XY using the selected axisMode.
+    ...slamMapLatLngToAirsimXY(lat, lng),
+    z: GOTO_Z
+  };
+  try {
+    statusDiv.innerText = `⏳ Goto target x=${target.x.toFixed(2)}, y=${target.y.toFixed(2)} (meters)`;
+  } catch (e) {}
+
+  // No alignment-based gating here: the mission image itself defines the coordinate frame.
+
+  // marker
+  L.circleMarker(e.latlng, { radius: 5, color: "blue" }).addTo(map);
+
+	  try {
+	    // Use the same path as the Geo map for consistency: AirSim XY -> lat/lng -> /mission/goto.
+	    // This makes SLAM-overlay click-to-go behave like the mission (image) map.
+	    const altitude_m = parseFloat(missionAltEl.value || "10");
+	    const ll = airsimXYToLatLng(target.x, target.y);
+	    const res = await fetch(`${API_BASE}/mission/goto`, {
+	      method: "POST",
+	      headers: { "Content-Type": "application/json" },
+	      body: JSON.stringify({ lat: ll.lat, lng: ll.lng, altitude_m })
+	    });
+	    const data = await res.json().catch(() => ({}));
+	    if (!res.ok || !data || !data.ok) {
+	      statusDiv.innerText = `❌ Goto failed (${res.status})`;
+	      console.error("Goto failed", res.status, data);
+	      return;
+	    }
+	    statusDiv.innerText = `✅ Goto sent (${data.target.x.toFixed(1)}, ${data.target.y.toFixed(1)}, ${data.target.z.toFixed(1)})`;
+
+    // NOTE: do NOT auto-resume mapping after 3 seconds.
+    // Wait for "Reached target" or a user click "Resume Mapping".
+
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+
+
+
+// ============================================================
+// Dynamic Mapping UI (Geo Map) - ADDITIVE / ISOLATED
+// ============================================================
+
+let geoMapVisible = false;
+let currentMissionId = null;
+
+// Geo origin MUST match backend defaults or env vars.
+// Backend returns origin/yaw in /mission/create and /mission/drone/pose; we update after first call.
+let geoOrigin = { lat: 37.4219999, lng: -122.0840575 };
+let geoYawDeg = 0.0;
+let geoOffsetX = 0.0;
+let geoOffsetY = 0.0;
+
+const EARTH_RADIUS_M = 6378137.0;
+function airsimXYToLatLng(xAirSimM, yAirSimM) {
+  // Must match backend gps_utils.airsim_xy_to_latlng():
+  // 1) subtract offset (origin corresponds to AirSim offset)
+  // 2) rotate by +yaw into (north,east)
+  // 3) equirectangular meters->degrees about (lat0,lng0)
+  const x0 = xAirSimM - geoOffsetX;
+  const y0 = yAirSimM - geoOffsetY;
+  const a = geoYawDeg * Math.PI / 180.0;
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  const northM = ca * x0 - sa * y0;
+  const eastM = sa * x0 + ca * y0;
+
+  const lat0Rad = geoOrigin.lat * Math.PI / 180.0;
+  const dLng = eastM / (EARTH_RADIUS_M * Math.cos(lat0Rad));
+  return {
+    lat: geoOrigin.lat + (northM / EARTH_RADIUS_M) * 180.0 / Math.PI,
+    lng: geoOrigin.lng + dLng * 180.0 / Math.PI
+  };
+}
+
+// --- Geo map using a local image (no external tiles) ---
+// Alignment model:
+// - Image is assumed NORTH-UP (top of image = +X / North in AirSim).
+// - Image is aligned using `static/map/config.json`:
+//   - meters_per_pixel: scale
+//   - origin_px: pixel (in the image) where AirSim (0,0) should appear
+const MAP_IMAGE_FILENAME = "ChatGPT Image Jan 28, 2026, 04_58_17 PM.png";
+const MAP_IMAGE_URL = `${API_BASE}/static/map/${encodeURIComponent(MAP_IMAGE_FILENAME)}`;
+let MAP_WIDTH_PX = 1024;            // Defaults; can be overridden by static/map/config.json.
+let MAP_HEIGHT_PX = 1024;
+let MAP_METERS_PER_PIXEL = 0.5;
+let MAP_ORIGIN_PX = { x: MAP_WIDTH_PX / 2, y: MAP_HEIGHT_PX / 2 };
+let GEO_LOCKED_ZOOM_IN_LEVELS = 2;
+
+async function loadMapConfig() {
+  try {
+    const res = await fetch(`${API_BASE}/static/map/config.json`);
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (cfg.image_px && typeof cfg.image_px.w === "number" && typeof cfg.image_px.h === "number") {
+      MAP_WIDTH_PX = cfg.image_px.w;
+      MAP_HEIGHT_PX = cfg.image_px.h;
+    }
+    if (typeof cfg.meters_per_pixel === "number" && cfg.meters_per_pixel > 0) {
+      MAP_METERS_PER_PIXEL = cfg.meters_per_pixel;
+    }
+    if (cfg.origin_px && typeof cfg.origin_px.x === "number" && typeof cfg.origin_px.y === "number") {
+      MAP_ORIGIN_PX = { x: cfg.origin_px.x, y: cfg.origin_px.y };
+    }
+    if (typeof cfg.locked_zoom_in_levels === "number" && Number.isFinite(cfg.locked_zoom_in_levels)) {
+      GEO_LOCKED_ZOOM_IN_LEVELS = Math.max(0, Math.min(6, Math.floor(cfg.locked_zoom_in_levels)));
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// Geo map is an image-aligned view. To keep meters_per_pixel deterministic,
+// we keep a fixed zoom level (computed once after fitBounds) and disable user zoom.
+const geoMap = L.map("geoMap", {
+  zoomControl: false,
+  scrollWheelZoom: false,
+  doubleClickZoom: false,
+  boxZoom: false,
+  keyboard: false,
+  touchZoom: false,
+}).setView([geoOrigin.lat, geoOrigin.lng], 18);
+
+function recomputeImageBounds() {
+  // Convert image corners to AirSim meters using origin_px.
+  // Pixel coords: (0,0)=top-left, x->right, y->down.
+  // AirSim: +x north (up), +y east (right).
+  // Therefore:
+  //   x_m = (origin_py - py) * mpp
+  //   y_m = (px - origin_px) * mpp
+  const mpp = MAP_METERS_PER_PIXEL;
+  const ox = MAP_ORIGIN_PX.x;
+  const oy = MAP_ORIGIN_PX.y;
+
+  function pxToAirsim(px, py) {
+    // NOTE: geoOffsetX/Y allow the geo origin to correspond to a non-zero AirSim pose.
+    // Most setups keep offset at (0,0).
+    const xLocal = (oy - py) * mpp;
+    const yLocal = (px - ox) * mpp;
+    return { x: xLocal + geoOffsetX, y: yLocal + geoOffsetY };
+  }
+
+  const tl = pxToAirsim(0, 0);
+  const tr = pxToAirsim(MAP_WIDTH_PX, 0);
+  const bl = pxToAirsim(0, MAP_HEIGHT_PX);
+  const br = pxToAirsim(MAP_WIDTH_PX, MAP_HEIGHT_PX);
+
+  const ll_tl = airsimXYToLatLng(tl.x, tl.y);
+  const ll_tr = airsimXYToLatLng(tr.x, tr.y);
+  const ll_bl = airsimXYToLatLng(bl.x, bl.y);
+  const ll_br = airsimXYToLatLng(br.x, br.y);
+
+  const lats = [ll_tl.lat, ll_tr.lat, ll_bl.lat, ll_br.lat];
+  const lngs = [ll_tl.lng, ll_tr.lng, ll_bl.lng, ll_br.lng];
+  return L.latLngBounds([Math.min(...lats), Math.min(...lngs)], [Math.max(...lats), Math.max(...lngs)]);
+}
+
+let imageBounds = recomputeImageBounds();
+let mapImageOverlay = L.imageOverlay(MAP_IMAGE_URL, imageBounds, { interactive: false }).addTo(geoMap);
+// Mission-only crop overlay (so the user only sees the mission portion of the image).
+let missionCropOverlay = null;   // L.imageOverlay
+let missionCropOutline = null;   // L.polygon
+let missionCropBounds = null;    // L.latLngBounds
+let GEO_LOCKED_ZOOM = null;
+let GEO_VIEW_LOCKED = false;
+
+function refreshMapImageOverlay() {
+  imageBounds = recomputeImageBounds();
+  // Keep the overlay aligned if geoOrigin is updated after /mission/create.
+  mapImageOverlay.setBounds(imageBounds);
+}
+
+function _clearMissionCropOverlay() {
+  try { if (missionCropOverlay) geoMap.removeLayer(missionCropOverlay); } catch (e) {}
+  try { if (missionCropOutline) geoMap.removeLayer(missionCropOutline); } catch (e) {}
+  missionCropOverlay = null;
+  missionCropOutline = null;
+  missionCropBounds = null;
+}
+
+async function buildGeoMissionCropOverlay(latlngs) {
+  if (!latlngs || latlngs.length < 3) return;
+
+  // Ensure the full-image overlay bounds are current (origin/yaw/offset may have changed).
+  try { refreshMapImageOverlay(); } catch (e) {}
+
+  // Compute bounding box in IMAGE pixels for crop.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of latlngs) {
+    const px = imagePixelFromLatLng(p.lat, p.lng);
+    minX = Math.min(minX, px.x);
+    minY = Math.min(minY, px.y);
+    maxX = Math.max(maxX, px.x);
+    maxY = Math.max(maxY, px.y);
+  }
+  const padPx = 24;
+  minX = Math.max(0, Math.floor(minX - padPx));
+  minY = Math.max(0, Math.floor(minY - padPx));
+  maxX = Math.min(MAP_WIDTH_PX, Math.ceil(maxX + padPx));
+  maxY = Math.min(MAP_HEIGHT_PX, Math.ceil(maxY + padPx));
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+
+  // Load the full image and crop with canvas.
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.src = MAP_IMAGE_URL;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = (err) => reject(err || new Error("image load failed"));
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, minX, minY, w, h, 0, 0, w, h);
+  let dataUrl = null;
+  try {
+    dataUrl = canvas.toDataURL("image/png");
+  } catch (e) {
+    statusDiv.innerText = "❌ Mission crop failed (browser blocked canvas image read). Open UI from http://127.0.0.1:8000/ (not file://).";
+    throw e;
+  }
+
+  // Convert crop corners to LAT/LNG bounds.
+  const ll_tl = pixelToLatLng(minX, minY);
+  const ll_tr = pixelToLatLng(maxX, minY);
+  const ll_br = pixelToLatLng(maxX, maxY);
+  const ll_bl = pixelToLatLng(minX, maxY);
+  missionCropBounds = L.latLngBounds(
+    [Math.min(ll_tl.lat, ll_tr.lat, ll_br.lat, ll_bl.lat), Math.min(ll_tl.lng, ll_tr.lng, ll_br.lng, ll_bl.lng)],
+    [Math.max(ll_tl.lat, ll_tr.lat, ll_br.lat, ll_bl.lat), Math.max(ll_tl.lng, ll_tr.lng, ll_br.lng, ll_bl.lng)],
+  );
+
+  // Replace existing crop overlay.
+  _clearMissionCropOverlay();
+  // Hide full image; keep it mounted so conversion functions still work consistently.
+  try { mapImageOverlay.setOpacity(0.0); } catch (e) {}
+  missionCropOverlay = L.imageOverlay(dataUrl, missionCropBounds, { opacity: 1.0, interactive: false }).addTo(geoMap);
+  missionCropOutline = L.polygon(latlngs, { color: "#00a", weight: 2, fillOpacity: 0.0, interactive: false }).addTo(geoMap);
+
+  // Fit view to crop and lock panning to it.
+  try { geoMap.invalidateSize(); } catch (e) {}
+  try { geoMap.fitBounds(missionCropBounds.pad(0.05), { animate: false }); } catch (e) {}
+  try {
+    const z = geoMap.getZoom();
+    geoMap.setMinZoom(z);
+    geoMap.setMaxZoom(z);
+  } catch (e) {}
+  try {
+    geoMap.setMaxBounds(missionCropBounds.pad(0.2));
+  } catch (e) {}
+}
+
+function ensureGeoViewLocked() {
+  if (GEO_VIEW_LOCKED) return;
+  // IMPORTANT: Leaflet measures container size. If the div is still `display:none`,
+  // fitBounds can compute an invalid view, leading to a blank map. We only lock the
+  // view once the Geo map is visible (toggle button).
+  try { geoMap.invalidateSize(); } catch (e) {}
+  try { geoMap.fitBounds(imageBounds, { animate: false }); } catch (e) {}
+  // Zoom in a bit to better fill the viewport, then lock zoom so scale stays deterministic.
+  try {
+    const z = geoMap.getZoom() + GEO_LOCKED_ZOOM_IN_LEVELS;
+    geoMap.setZoom(z, { animate: false });
+    GEO_LOCKED_ZOOM = z;
+    geoMap.setMinZoom(z);
+    geoMap.setMaxZoom(z);
+    GEO_VIEW_LOCKED = true;
+  } catch (e) {
+    // ignore
+  }
+}
+
+// Load config early so overlay bounds are correct, but do NOT fit/lock until visible.
+loadMapConfig().then(() => {
+  refreshMapImageOverlay();
+});
+
+// --- Drawing controls ---
+const drawnItems = new L.FeatureGroup();
+geoMap.addLayer(drawnItems);
+
+const drawControl = new L.Control.Draw({
+  // Keep draw toolbar away from the top-left app control panel.
+  position: "topright",
+  draw: {
+    polygon: true,
+    rectangle: true,
+    circle: false,
+    circlemarker: false,
+    marker: false,
+    polyline: false
+  },
+  edit: { featureGroup: drawnItems, edit: true, remove: true }
+});
+geoMap.addControl(drawControl);
+
+let missionAreaLatLngs = null; // array of {lat,lng}
+let missionAreaLayer = null;
+let gridLayer = L.layerGroup().addTo(geoMap);
+let pathLayer = L.layerGroup().addTo(geoMap);
+
+function updateMissionAreaFromDrawnItems() {
+  // Keep a single active shape.
+  const layers = drawnItems.getLayers();
+  if (!layers || layers.length === 0) {
+    missionAreaLatLngs = null;
+    return;
+  }
+
+  const layer = layers[layers.length - 1];
+  let latlngs = [];
+  if (layer.getLatLngs) {
+    const raw = layer.getLatLngs();
+    latlngs = Array.isArray(raw[0]) ? raw[0] : raw;
+  }
+
+  missionAreaLatLngs = latlngs.map(p => ({ lat: p.lat, lng: p.lng }));
+}
+
+geoMap.on(L.Draw.Event.CREATED, (event) => {
+  drawnItems.clearLayers();
+  gridLayer.clearLayers();
+  pathLayer.clearLayers();
+  currentMissionId = null;
+
+  const layer = event.layer;
+  drawnItems.addLayer(layer);
+  updateMissionAreaFromDrawnItems();
+});
+
+geoMap.on(L.Draw.Event.EDITED, () => {
+  // User adjusted vertices; keep missionAreaLatLngs in sync.
+  updateMissionAreaFromDrawnItems();
+});
+
+geoMap.on(L.Draw.Event.DELETED, () => {
+  updateMissionAreaFromDrawnItems();
+});
+
+// --- Geo drone marker (visual only) ---
+const geoDroneIcon = L.divIcon({ html: "🚁", iconSize: [30, 30], className: "" });
+let geoDroneMarker = L.marker([geoOrigin.lat, geoOrigin.lng], { icon: geoDroneIcon }).addTo(geoMap);
+let geoOriginMarker = L.circleMarker([geoOrigin.lat, geoOrigin.lng], { radius: 5, color: "#00a", weight: 2 }).addTo(geoMap);
+
+function imagePixelFromLatLng(lat, lng) {
+  // Returns pixel coords within the image overlay based on current overlay bounds.
+  // This is useful for setting `static/map/config.json` origin_px deterministically.
+  const sw = imageBounds.getSouthWest();
+  const ne = imageBounds.getNorthEast();
+  const west = sw.lng, east = ne.lng;
+  const south = sw.lat, north = ne.lat;
+  const u = (lng - west) / ((east - west) || 1e-12);       // 0..1 left->right
+  const v = (north - lat) / ((north - south) || 1e-12);    // 0..1 top->bottom
+  return {
+    x: u * MAP_WIDTH_PX,
+    y: v * MAP_HEIGHT_PX,
+  };
+}
+
+function latLngToAirsimXY(lat, lng) {
+  // Must match backend gps_utils.latlng_to_airsim_xy():
+  // 1) lat/lng -> (north,east) meters about geoOrigin
+  // 2) rotate by -yaw into AirSim XY
+  // 3) add offset
+  const lat0Rad = geoOrigin.lat * Math.PI / 180.0;
+  const dLatRad = (lat - geoOrigin.lat) * Math.PI / 180.0;
+  const dLngRad = (lng - geoOrigin.lng) * Math.PI / 180.0;
+  const northM = dLatRad * EARTH_RADIUS_M;
+  const eastM = dLngRad * EARTH_RADIUS_M * Math.cos(lat0Rad);
+
+  const a = geoYawDeg * Math.PI / 180.0;
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  // Inverse rotation (-yaw): x = ca*n + sa*e, y = -sa*n + ca*e
+  const xLocal = ca * northM + sa * eastM;
+  const yLocal = -sa * northM + ca * eastM;
+  return { x: xLocal + geoOffsetX, y: yLocal + geoOffsetY };
+}
+
+function pixelToLatLng(px, py) {
+  // Inverse of imagePixelFromLatLng using current imageBounds.
+  const sw = imageBounds.getSouthWest();
+  const ne = imageBounds.getNorthEast();
+  const west = sw.lng, east = ne.lng;
+  const south = sw.lat, north = ne.lat;
+  const u = px / (MAP_WIDTH_PX || 1);
+  const v = py / (MAP_HEIGHT_PX || 1);
+  return {
+    lng: west + u * (east - west),
+    lat: north - v * (north - south),
+  };
+}
+
+async function getSlamAlignStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/slam/align/status`);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+function airsimToSlamXY(ax, ay, alignStatus) {
+  // Invert the calibrated mapping: airsim = scale*R*slam + t  =>  slam = (1/scale)*R^T*(airsim - t)
+  const scale = Number(alignStatus.scale || 1.0) || 1.0;
+  const R = alignStatus.R || [[1, 0], [0, 1]];
+  const t = alignStatus.t || [0, 0];
+  const r11 = Number(R[0][0]), r12 = Number(R[0][1]);
+  const r21 = Number(R[1][0]), r22 = Number(R[1][1]);
+  const tx = Number(t[0]), ty = Number(t[1]);
+  const vx = ax - tx;
+  const vy = ay - ty;
+  const sx = (r11 * vx + r21 * vy) / scale;
+  const sz = (r12 * vx + r22 * vy) / scale;
+  return { sx, sz };
+}
+
+function slamXYToMapLatLng(sx, sz) {
+  // SLAM map display uses lat=z*SCALE, lng=x*SCALE (see updateTrajectory()).
+  return [sz * SCALE, sx * SCALE];
+}
+
+async function buildSlamMissionOverlayFromGeoPolygon(latlngs, opts = {}) {
+  if (!latlngs || latlngs.length < 3) return;
+  const force = !!(opts && opts.force);
+  // The mission crop overlay is most meaningful when the SLAM map is AirSim-aligned.
+  // If alignment is poor/missing, default behavior is to hide it unless `force` is requested.
+  try {
+    const st = await getSlamAlignStatusCached();
+    const okForOverlay = !!(st && st.has_transform && (st.goto_max_step_m == null || Number(st.goto_max_step_m) > 0));
+    if (!okForOverlay && !force) {
+      try {
+        if (slamMissionOverlay) map.removeLayer(slamMissionOverlay);
+        if (slamMissionOutline) map.removeLayer(slamMissionOutline);
+      } catch (e) {}
+      slamMissionOverlay = null;
+      slamMissionOutline = null;
+      slamMissionViewBounds = null;
+      statusDiv.innerText = "⚠️ Mission overlay hidden until SLAM→AirSim alignment is usable (RMSE must improve).";
+      return;
+    }
+  } catch (e) {
+    // If status fetch fails, do not draw an untrusted overlay unless forced.
+    if (!force) return;
+  }
+
+  // The SLAM click-to-go map is displayed in AirSim-aligned coordinates.
+  // Overlay ONLY the mission portion of the image (cropped), and zoom the SLAM map
+  // to that area so the overlay fills the view (game-style "mission view").
+
+  // Compute bounding box in IMAGE pixels for crop.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of latlngs) {
+    const px = imagePixelFromLatLng(p.lat, p.lng);
+    minX = Math.min(minX, px.x);
+    minY = Math.min(minY, px.y);
+    maxX = Math.max(maxX, px.x);
+    maxY = Math.max(maxY, px.y);
+  }
+  // Clamp + padding so the crop includes a little context around the polygon.
+  const padPx = 24;
+  minX = Math.max(0, Math.floor(minX - padPx));
+  minY = Math.max(0, Math.floor(minY - padPx));
+  maxX = Math.min(MAP_WIDTH_PX, Math.ceil(maxX + padPx));
+  maxY = Math.min(MAP_HEIGHT_PX, Math.ceil(maxY + padPx));
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+
+  // Load the full map image and crop with canvas.
+  const img = new Image();
+  // Needed so canvas cropping works even if the UI is opened via file://
+  // (requires backend to send Access-Control-Allow-Origin for /static).
+  img.crossOrigin = "anonymous";
+  img.src = MAP_IMAGE_URL;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = (err) => reject(err || new Error("image load failed"));
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, minX, minY, w, h, 0, 0, w, h);
+  let dataUrl = null;
+  try {
+    dataUrl = canvas.toDataURL("image/png");
+  } catch (e) {
+    statusDiv.innerText = "❌ Mission overlay crop failed (browser blocked canvas image read). Open UI from http://127.0.0.1:8000/ (not file://).";
+    throw e;
+  }
+
+  // Convert crop corners to AirSim-aligned SLAM-map bounds.
+  const cornersPx = [
+    [minX, minY],
+    [maxX, minY],
+    [maxX, maxY],
+    [minX, maxY],
+  ];
+  const cornerPts = [];
+  for (const [px, py] of cornersPx) {
+    const ll = pixelToLatLng(px, py);
+    const axy = latLngToAirsimXY(ll.lat, ll.lng);
+    cornerPts.push(airsimXYToSlamMapLatLng(axy.x, axy.y));
+  }
+  const lats = cornerPts.map(p => p[0]);
+  const lngs = cornerPts.map(p => p[1]);
+  const cropBounds = L.latLngBounds([Math.min(...lats), Math.min(...lngs)], [Math.max(...lats), Math.max(...lngs)]);
+
+  // Mission outline in AirSim-aligned SLAM map coords.
+  const outline = [];
+  for (const p of latlngs) {
+    const axy = latLngToAirsimXY(p.lat, p.lng);
+    outline.push(airsimXYToSlamMapLatLng(axy.x, axy.y));
+  }
+
+  // Replace existing overlays.
+  try {
+    if (slamMissionOverlay) map.removeLayer(slamMissionOverlay);
+    if (slamMissionOutline) map.removeLayer(slamMissionOutline);
+  } catch (e) {}
+
+  slamMissionOverlay = L.imageOverlay(dataUrl, cropBounds, { opacity: 0.75, interactive: false }).addTo(map);
+  slamMissionOutline = L.polygon(outline, { color: "#00a", weight: 2, fill: false, interactive: false }).addTo(map);
+  slamMissionViewBounds = cropBounds;
+
+  // Zoom the SLAM map to the mission overlay so it fills the viewport.
+  try {
+    map.fitBounds(cropBounds.pad(0.15), { animate: false });
+  } catch (e) {}
+
+  // Mission-only "GPS-like" view: keep only the mission crop visible and clickable.
+  try {
+    // Hide the big world bounds rectangle for a cleaner mission-only look.
+    if (slamWorldRect) slamWorldRect.setStyle({ opacity: 0.0, fillOpacity: 0.0 });
+  } catch (e) {}
+  try {
+    map.options.maxBoundsViscosity = 1.0;
+    map.setMaxBounds(cropBounds.pad(0.2));
+  } catch (e) {}
+  try {
+    const z = map.getZoom();
+    slamSavedZoom = z;
+    map.setMinZoom(z);
+    map.setMaxZoom(z);
+    slamMissionViewLocked = true;
+  } catch (e) {}
+
+  // Hide keyframe visualization while in mission view.
+  try { polyline.setLatLngs([]); } catch (e) {}
+  try { miniPolyline.setLatLngs([]); } catch (e) {}
+}
+
+// ALT+click on the geo map prints the underlying image pixel coordinate.
+// This does NOT change calibration/server state (static workflow).
+geoMap.on("click", (e) => {
+  try {
+    if (!e.originalEvent || !e.originalEvent.altKey) return;
+    const px = imagePixelFromLatLng(e.latlng.lat, e.latlng.lng);
+    const msg =
+      `ALT+click pixel: x=${px.x.toFixed(1)}, y=${px.y.toFixed(1)} (image ${MAP_WIDTH_PX}x${MAP_HEIGHT_PX})\n` +
+      `Set static/map/config.json origin_px to this if this point should be AirSim (0,0).`;
+    console.log(msg);
+    statusDiv.innerText = msg;
+  } catch (err) {
+    // ignore
+  }
+});
+
+// Click on the geo map sends a goto using lat/lng -> AirSim conversion.
+// This is the correct coordinate system for dynamic missions and meters_per_pixel tuning.
+	geoMap.on("click", async (e) => {
+	  try {
+	    if (slamState === "calibrating") {
+	      statusDiv.innerText = "⚠️ Calibration running. Motion commands are disabled.";
+	      return;
+	    }
+	    if (slamState !== "localization") {
+	      statusDiv.innerText = "⚠️ Finalize map first (SLAM must be in localization) to use Geo click-to-go.";
+	      return;
+	    }
+	    const altitude = parseFloat(missionAltEl.value || "10");
+
+    statusDiv.innerText = "⏳ Geo goto...";
+    const data = await _gotoLatLng(e.latlng.lat, e.latlng.lng, altitude);
+    statusDiv.innerText = `✅ Geo goto sent (${data.target.x.toFixed(1)}, ${data.target.y.toFixed(1)}, ${data.target.z.toFixed(1)})`;
+
+    // Record "outbound" clicks (outside mission area) so Return Home can retrace.
+    try {
+      const area = await ensureMissionAreaForOverlay();
+      const inside = area && area.length >= 3 ? _isInsidePolygonLatLng({ lat: e.latlng.lat, lng: e.latlng.lng }, area) : false;
+      if (!inside && data && data.target && typeof data.target.x === "number" && typeof data.target.y === "number") {
+        navOutHistory.push({
+          lat: Number(e.latlng.lat),
+          lng: Number(e.latlng.lng),
+          x: Number(data.target.x),
+          y: Number(data.target.y),
+          z: Number(data.target.z),
+        });
+        // Keep history bounded.
+        if (navOutHistory.length > 40) navOutHistory = navOutHistory.slice(-40);
+      }
+      // If user clicks back inside the mission area, clear outbound history (already home-ish).
+      if (inside) {
+        navOutHistory = [];
+      }
+    } catch (e2) {}
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+async function updateGeoDrone() {
+  if (!geoMapVisible) return;
+  try {
+    // Abort any in-flight request to avoid piling up during reload/shutdown.
+    try { if (geoDroneAbort) geoDroneAbort.abort(); } catch (e) {}
+    geoDroneAbort = new AbortController();
+
+    const res = await fetch(`${API_BASE}/mission/drone/pose`, { signal: geoDroneAbort.signal });
+    if (res.status === 503) {
+      // Backend shutting down (or AirSim unavailable). Stop polling to avoid spam.
+      try { clearInterval(geoDroneTimer); } catch (e) {}
+      return;
+    }
+    if (!res.ok) return;
+    const pose = await res.json();
+    if (!pose || !pose.ok) return;
+
+    geoOrigin = pose.origin || geoOrigin;
+    geoYawDeg = (typeof pose.yaw_deg === "number") ? pose.yaw_deg : geoYawDeg;
+    geoOffsetX = (typeof pose.offset_x_m === "number") ? pose.offset_x_m : geoOffsetX;
+    geoOffsetY = (typeof pose.offset_y_m === "number") ? pose.offset_y_m : geoOffsetY;
+
+    // Use backend-provided lat/lng (highest precision + consistent with backend config).
+    if (typeof pose.lat === "number" && typeof pose.lng === "number") {
+      geoDroneMarker.setLatLng([pose.lat, pose.lng]);
+    }
+
+    // Visualize current geo origin.
+    if (geoOrigin && typeof geoOrigin.lat === "number" && typeof geoOrigin.lng === "number") {
+      geoOriginMarker.setLatLng([geoOrigin.lat, geoOrigin.lng]);
+    }
+
+    // Debug info: helps verify whether "origin set" is actually changing server-side.
+    try {
+      geoDebugDiv.textContent =
+        `origin(lat,lng): ${geoOrigin.lat.toFixed(6)}, ${geoOrigin.lng.toFixed(6)}\n` +
+        `yaw_deg: ${geoYawDeg.toFixed(2)}\n` +
+        `offset_xy_m: ${geoOffsetX.toFixed(2)}, ${geoOffsetY.toFixed(2)}\n` +
+        `airsim_xy: ${Number(pose.x).toFixed(2)}, ${Number(pose.y).toFixed(2)}`;
+    } catch (e) {
+      // ignore
+    }
+
+    // Keep the image overlay aligned with the active transform.
+    refreshMapImageOverlay();
+  } catch (e) {
+    // ignore
+  }
+}
+let geoDroneAbort = null;
+let geoDroneTimer = setInterval(updateGeoDrone, 500);
+
+// Reduce noisy errors during shutdown/reload.
+window.addEventListener("beforeunload", () => {
+  try { if (geoDroneAbort) geoDroneAbort.abort(); } catch (e) {}
+  try { clearInterval(geoDroneTimer); } catch (e) {}
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    try { if (geoDroneAbort) geoDroneAbort.abort(); } catch (e) {}
+    try { clearInterval(geoDroneTimer); } catch (e) {}
+  } else {
+    geoDroneTimer = setInterval(updateGeoDrone, 500);
+  }
+});
+
+toggleGeoBtn.onclick = () => {
+  geoMapVisible = !geoMapVisible;
+  document.getElementById("map").style.display = geoMapVisible ? "none" : "block";
+  document.getElementById("geoMap").style.display = geoMapVisible ? "block" : "none";
+  // SLAM minimap only makes sense while the SLAM map is visible.
+  try { miniMapEl.style.display = geoMapVisible ? "none" : "block"; } catch (e) {}
+  toggleGeoBtn.innerText = geoMapVisible ? "🧭 SLAM Map" : "🗺️ Geo Mission";
+  // Move the control panel away from the drawing area so polygons/rectangles stay visible.
+  try {
+    if (controlPanel) {
+      if (geoMapVisible) {
+        controlPanel.style.top = "auto";
+        controlPanel.style.left = "auto";
+        controlPanel.style.right = "10px";
+        controlPanel.style.bottom = "10px";
+      } else {
+        controlPanel.style.top = "10px";
+        controlPanel.style.left = "10px";
+        controlPanel.style.right = "auto";
+        controlPanel.style.bottom = "auto";
+      }
+    }
+  } catch (e) {}
+  if (geoMapVisible) {
+    geoMap.invalidateSize();
+    // Move marker immediately (don't wait for the next timer tick).
+    updateGeoDrone();
+    refreshMapImageOverlay();
+    ensureGeoViewLocked();
+    // Preserve fixed scale on every toggle.
+    try {
+      if (GEO_LOCKED_ZOOM !== null) geoMap.setZoom(GEO_LOCKED_ZOOM, { animate: false });
+    } catch (e) {}
+    // Geo map stays full-image; mission-only view is shown on the SLAM map overlay.
+  }
+  // When returning to the SLAM map, rebuild the mission overlay if we have one.
+  // Mission overlay is intentionally shown only after an explicit "Calibrate SLAM".
+};
+
+// Ensure minimap sizes correctly after initial load.
+try {
+  miniMap.invalidateSize();
+  miniMap.fitBounds(bounds, { animate: false });
+  // Zoom out one more level for a clearer overview.
+  miniMap.setZoom(miniMap.getZoom() - 1, { animate: false });
+} catch (e) {}
+
+	missionCreateBtn.onclick = async () => {
+  updateMissionAreaFromDrawnItems();
+  if (!missionAreaLatLngs || missionAreaLatLngs.length < 3) {
+    statusDiv.innerText = "Draw a rectangle or polygon on the Geo Map first (then click Create).";
+    console.warn("No mission area latlngs available", missionAreaLatLngs);
+    return;
+  }
+  // Update home center immediately so Return Home works even before Calibrate.
+  try { missionHomeLatLng = _computeMissionCenterLatLng(missionAreaLatLngs); } catch (e) {}
+  navOutHistory = [];
+  const altitude = parseFloat(missionAltEl.value || "10");
+  try {
+    console.log("Creating mission...", { missionAreaPoints: missionAreaLatLngs.length, altitude });
+    statusDiv.innerText = "⏳ Creating mission...";
+    const res = await fetch(`${API_BASE}/mission/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mission_area: missionAreaLatLngs, altitude })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      statusDiv.innerText = `❌ Mission create failed (${res.status})`;
+      console.error("Mission create failed", res.status, data);
+      return;
+    }
+    if (!data.ok) {
+      statusDiv.innerText = "Mission create failed.";
+      return;
+    }
+    currentMissionId = data.mission_id;
+    geoOrigin = data.origin;
+    if (typeof data.yaw_deg === "number") geoYawDeg = data.yaw_deg;
+    if (typeof data.offset_x_m === "number") geoOffsetX = data.offset_x_m;
+    if (typeof data.offset_y_m === "number") geoOffsetY = data.offset_y_m;
+    refreshMapImageOverlay();
+    // Do not force a re-zoom here (it makes the map feel like it "shifts" after Create).
+
+    gridLayer.clearLayers();
+    pathLayer.clearLayers();
+
+    // Mission area overlay
+    if (missionAreaLayer) geoMap.removeLayer(missionAreaLayer);
+    missionAreaLayer = L.polygon(missionAreaLatLngs, { color: "#00a", weight: 2, fillOpacity: 0.1 }).addTo(geoMap);
+
+    // Grid segments overlay
+    for (const seg of (data.grid_segments || [])) {
+      if (!seg || seg.length < 2) continue;
+      L.polyline([[seg[0].lat, seg[0].lng], [seg[1].lat, seg[1].lng]], { color: "#0a0", weight: 1 })
+        .addTo(gridLayer);
+    }
+
+    // Path overlay (ordered)
+    const path = (data.path || []).map(p => [p.lat, p.lng]);
+    if (path.length >= 2) {
+      L.polyline(path, { color: "#f80", weight: 2, opacity: 0.8 }).addTo(pathLayer);
+    }
+
+    // Save mission polygon for later. The cropped mission overlay on the SLAM map is shown
+    // only after the user explicitly clicks "Calibrate SLAM".
+    lastMissionAreaLatLngsForSlamOverlay = missionAreaLatLngs;
+    try { missionHomeLatLng = _computeMissionCenterLatLng(missionAreaLatLngs); } catch (e) {}
+    _missionOverlayBuiltOnce = false;
+    navOutHistory = [];
+
+    statusDiv.innerText = `✅ Mission created (${currentMissionId})`;
+  } catch (e) {
+    statusDiv.innerText = "❌ Mission create failed (backend unreachable?)";
+    console.error(e);
+  }
+};
+
+missionStartBtn.onclick = async () => {
+  if (!currentMissionId) {
+    statusDiv.innerText = "Create a mission first.";
+    return;
+  }
+  try {
+    console.log("Starting mission...", currentMissionId);
+    statusDiv.innerText = "⏳ Starting mission...";
+    const res = await fetch(`${API_BASE}/mission/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mission_id: currentMissionId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      statusDiv.innerText = `❌ Mission start failed (${res.status})`;
+      console.error("Mission start failed", res.status, data);
+      return;
+    }
+    if (data.ok) statusDiv.innerText = `▶️ Mission started (${data.mission_id})`;
+  } catch (e) {
+    statusDiv.innerText = "❌ Mission start failed";
+    console.error(e);
+  }
+};
+
+missionAbortBtn.onclick = async () => {
+  if (!currentMissionId) {
+    statusDiv.innerText = "No mission to abort.";
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/mission/abort`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mission_id: currentMissionId })
+    });
+    const data = await res.json();
+    if (data.ok) statusDiv.innerText = `🛑 Mission aborted (${data.mission_id})`;
+  } catch (e) {
+    statusDiv.innerText = "❌ Mission abort failed";
+  }
+};
+
+};
+</script>
+</body>
+</html>

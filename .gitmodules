@@ -1,0 +1,16 @@
+[submodule "AirSim"]
+	path = AirSim
+	url = https://github.com/microsoft/AirSim.git
+	ignore = dirty
+[submodule "PX4-Autopilot"]
+	path = PX4-Autopilot
+	url = https://github.com/PX4/PX4-Autopilot.git
+	ignore = dirty
+[submodule "LIO-SAM"]
+	path = LIO-SAM
+	url = https://github.com/TixiaoShan/LIO-SAM.git
+	ignore = dirty
+[submodule "ORB_SLAM3"]
+	path = ORB_SLAM3
+	url = https://github.com/UZ-SLAMLab/ORB_SLAM3.git
+	ignore = dirty

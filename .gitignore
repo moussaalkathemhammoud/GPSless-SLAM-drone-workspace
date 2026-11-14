@@ -1,0 +1,16 @@
+# Duplicate ORB_SLAM3 checkout left over from the old slam_web submodule;
+# the one that slam_web actually runs is the top-level ORB_SLAM3/ submodule.
+slam_web/orb_slam3/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Logs / runtime state
+*.log
+*.pid
+
+# Windows download markers
+*:Zone.Identifier
